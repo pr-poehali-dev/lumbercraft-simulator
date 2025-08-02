@@ -1,457 +1,472 @@
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Progress } from "@/components/ui/progress";
+import { Card } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
 import Icon from "@/components/ui/icon";
 
-const Index = () => {
-  const gameFeatures = [
-    {
-      title: "Крафтинг",
-      description: "Создавайте мебель, дома и улучшения из добытой древесины",
-      icon: "Hammer",
-      progress: 85
-    },
-    {
-      title: "Выживание", 
-      description: "Следите за усталостью, голодом и избегайте опасностей леса",
-      icon: "Heart",
-      progress: 92
-    },
-    {
-      title: "Экосистема",
-      description: "Баланс между вырубкой и посадкой новых деревьев",
-      icon: "Sprout",
-      progress: 78
-    },
-    {
-      title: "Мультиплеер",
-      description: "Стройте лесоперерабатывающую империю с друзьями",
-      icon: "Users",
-      progress: 95
-    },
-    {
-      title: "Прогрессия",
-      description: "Развивайте навыки и разблокируйте новые инструменты",
-      icon: "TrendingUp",
-      progress: 88
-    },
-    {
-      title: "Торговля",
-      description: "Продавайте древесину и готовые изделия на рынке",
-      icon: "ShoppingCart",
-      progress: 90
-    }
-  ];
+interface GameObject {
+  id: string;
+  type: 'human' | 'box' | 'ball' | 'platform';
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  velocityX: number;
+  velocityY: number;
+  health: number;
+  maxHealth: number;
+  color: string;
+  isDead: boolean;
+  isDragging: boolean;
+}
 
-  const screenshots = [
-    {
-      title: "Лесопилка",
-      description: "Современное оборудование для переработки"
-    },
-    {
-      title: "Глубокий лес",
-      description: "Исследуйте девственные леса"
-    },
-    {
-      title: "Мастерская",
-      description: "Создавайте уникальные предметы"
+interface Particle {
+  id: string;
+  x: number;
+  y: number;
+  velocityX: number;
+  velocityY: number;
+  color: string;
+  life: number;
+  maxLife: number;
+}
+
+const Index = () => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [gameObjects, setGameObjects] = useState<GameObject[]>([]);
+  const [particles, setParticles] = useState<Particle[]>([]);
+  const [selectedTool, setSelectedTool] = useState<string>('spawn_human');
+  const [isMouseDown, setIsMouseDown] = useState(false);
+  const [draggedObject, setDraggedObject] = useState<string | null>(null);
+  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+
+  const GRAVITY = 0.5;
+  const FRICTION = 0.98;
+  const CANVAS_WIDTH = 800;
+  const CANVAS_HEIGHT = 600;
+
+  // Создание нового объекта
+  const createGameObject = useCallback((type: GameObject['type'], x: number, y: number): GameObject => {
+    const id = Math.random().toString(36).substr(2, 9);
+    
+    const baseObject = {
+      id,
+      x,
+      y,
+      velocityX: 0,
+      velocityY: 0,
+      isDead: false,
+      isDragging: false,
+    };
+
+    switch (type) {
+      case 'human':
+        return {
+          ...baseObject,
+          type: 'human',
+          width: 30,
+          height: 60,
+          health: 100,
+          maxHealth: 100,
+          color: '#ffdbac',
+        };
+      case 'box':
+        return {
+          ...baseObject,
+          type: 'box',
+          width: 40,
+          height: 40,
+          health: 50,
+          maxHealth: 50,
+          color: '#8B4513',
+        };
+      case 'ball':
+        return {
+          ...baseObject,
+          type: 'ball',
+          width: 30,
+          height: 30,
+          health: 30,
+          maxHealth: 30,
+          color: '#FF6B6B',
+        };
+      case 'platform':
+        return {
+          ...baseObject,
+          type: 'platform',
+          width: 100,
+          height: 20,
+          health: 200,
+          maxHealth: 200,
+          color: '#555',
+        };
+      default:
+        return baseObject as GameObject;
     }
+  }, []);
+
+  // Создание частиц
+  const createParticles = useCallback((x: number, y: number, color: string, count: number = 5) => {
+    const newParticles: Particle[] = [];
+    for (let i = 0; i < count; i++) {
+      newParticles.push({
+        id: Math.random().toString(36).substr(2, 9),
+        x: x + (Math.random() - 0.5) * 20,
+        y: y + (Math.random() - 0.5) * 20,
+        velocityX: (Math.random() - 0.5) * 10,
+        velocityY: (Math.random() - 0.5) * 10,
+        color,
+        life: 60,
+        maxLife: 60,
+      });
+    }
+    setParticles(prev => [...prev, ...newParticles]);
+  }, []);
+
+  // Проверка коллизий
+  const checkCollision = useCallback((obj1: GameObject, obj2: GameObject): boolean => {
+    return obj1.x < obj2.x + obj2.width &&
+           obj1.x + obj1.width > obj2.x &&
+           obj1.y < obj2.y + obj2.height &&
+           obj1.y + obj1.height > obj2.y;
+  }, []);
+
+  // Нанесение урона
+  const damageObject = useCallback((objectId: string, damage: number) => {
+    setGameObjects(prev => prev.map(obj => {
+      if (obj.id === objectId) {
+        const newHealth = Math.max(0, obj.health - damage);
+        const isDead = newHealth <= 0;
+        
+        if (isDead && !obj.isDead) {
+          createParticles(obj.x + obj.width/2, obj.y + obj.height/2, '#FF0000', 8);
+        }
+        
+        return { ...obj, health: newHealth, isDead };
+      }
+      return obj;
+    }));
+  }, [createParticles]);
+
+  // Физическое обновление
+  const updatePhysics = useCallback(() => {
+    setGameObjects(prev => prev.map(obj => {
+      if (obj.isDragging || obj.type === 'platform') return obj;
+
+      let newX = obj.x + obj.velocityX;
+      let newY = obj.y + obj.velocityY;
+      let newVelX = obj.velocityX * FRICTION;
+      let newVelY = obj.velocityY + GRAVITY;
+
+      // Границы канваса
+      if (newX < 0) {
+        newX = 0;
+        newVelX = -newVelX * 0.5;
+      }
+      if (newX + obj.width > CANVAS_WIDTH) {
+        newX = CANVAS_WIDTH - obj.width;
+        newVelX = -newVelX * 0.5;
+      }
+      if (newY + obj.height > CANVAS_HEIGHT) {
+        newY = CANVAS_HEIGHT - obj.height;
+        newVelY = -newVelY * 0.5;
+        newVelX *= 0.8; // Трение о землю
+      }
+
+      return {
+        ...obj,
+        x: newX,
+        y: newY,
+        velocityX: Math.abs(newVelX) < 0.1 ? 0 : newVelX,
+        velocityY: Math.abs(newVelY) < 0.1 ? 0 : newVelY,
+      };
+    }));
+
+    // Обновление частиц
+    setParticles(prev => prev.map(particle => ({
+      ...particle,
+      x: particle.x + particle.velocityX,
+      y: particle.y + particle.velocityY,
+      velocityY: particle.velocityY + 0.2,
+      life: particle.life - 1,
+    })).filter(particle => particle.life > 0));
+  }, []);
+
+  // Обработка клика по канвасу
+  const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    if (selectedTool.startsWith('spawn_')) {
+      const objectType = selectedTool.replace('spawn_', '') as GameObject['type'];
+      const newObject = createGameObject(objectType, x - 20, y - 30);
+      setGameObjects(prev => [...prev, newObject]);
+    } else if (selectedTool === 'explode') {
+      // Взрыв
+      gameObjects.forEach(obj => {
+        const distance = Math.sqrt((obj.x - x) ** 2 + (obj.y - y) ** 2);
+        if (distance < 100) {
+          const force = (100 - distance) / 100 * 15;
+          const angle = Math.atan2(obj.y - y, obj.x - x);
+          
+          setGameObjects(prev => prev.map(o => 
+            o.id === obj.id ? {
+              ...o,
+              velocityX: o.velocityX + Math.cos(angle) * force,
+              velocityY: o.velocityY + Math.sin(angle) * force,
+            } : o
+          ));
+          
+          damageObject(obj.id, Math.floor(force * 2));
+        }
+      });
+      
+      createParticles(x, y, '#FFA500', 15);
+    } else if (selectedTool === 'damage') {
+      // Нанесение урона
+      gameObjects.forEach(obj => {
+        if (x >= obj.x && x <= obj.x + obj.width && 
+            y >= obj.y && y <= obj.y + obj.height) {
+          damageObject(obj.id, 25);
+          createParticles(x, y, '#FF0000', 3);
+        }
+      });
+    }
+  }, [selectedTool, gameObjects, createGameObject, damageObject, createParticles]);
+
+  // Обработка перетаскивания
+  const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    setMousePos({ x, y });
+    setIsMouseDown(true);
+
+    if (selectedTool === 'drag') {
+      const clickedObject = gameObjects.find(obj => 
+        x >= obj.x && x <= obj.x + obj.width && 
+        y >= obj.y && y <= obj.y + obj.height
+      );
+      
+      if (clickedObject) {
+        setDraggedObject(clickedObject.id);
+        setGameObjects(prev => prev.map(obj => 
+          obj.id === clickedObject.id ? { ...obj, isDragging: true } : obj
+        ));
+      }
+    }
+  }, [selectedTool, gameObjects]);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    if (draggedObject && isMouseDown) {
+      setGameObjects(prev => prev.map(obj => 
+        obj.id === draggedObject ? {
+          ...obj,
+          x: x - obj.width / 2,
+          y: y - obj.height / 2,
+          velocityX: (x - mousePos.x) * 0.5,
+          velocityY: (y - mousePos.y) * 0.5,
+        } : obj
+      ));
+    }
+
+    setMousePos({ x, y });
+  }, [draggedObject, isMouseDown, mousePos]);
+
+  const handleMouseUp = useCallback(() => {
+    setIsMouseDown(false);
+    if (draggedObject) {
+      setGameObjects(prev => prev.map(obj => 
+        obj.id === draggedObject ? { ...obj, isDragging: false } : obj
+      ));
+      setDraggedObject(null);
+    }
+  }, [draggedObject]);
+
+  // Рендеринг
+  const render = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Очистка канваса
+    ctx.fillStyle = '#f0f8ff';
+    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+    // Сетка
+    ctx.strokeStyle = '#e0e0e0';
+    ctx.lineWidth = 1;
+    for (let x = 0; x < CANVAS_WIDTH; x += 50) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, CANVAS_HEIGHT);
+      ctx.stroke();
+    }
+    for (let y = 0; y < CANVAS_HEIGHT; y += 50) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(CANVAS_WIDTH, y);
+      ctx.stroke();
+    }
+
+    // Рендеринг объектов
+    gameObjects.forEach(obj => {
+      ctx.fillStyle = obj.isDead ? '#666' : obj.color;
+      
+      if (obj.type === 'ball') {
+        ctx.beginPath();
+        ctx.arc(obj.x + obj.width/2, obj.y + obj.height/2, obj.width/2, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.fillRect(obj.x, obj.y, obj.width, obj.height);
+      }
+
+      // Человечек - детали
+      if (obj.type === 'human' && !obj.isDead) {
+        // Голова
+        ctx.fillStyle = obj.color;
+        ctx.beginPath();
+        ctx.arc(obj.x + obj.width/2, obj.y + 10, 8, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Глаза
+        ctx.fillStyle = '#000';
+        ctx.fillRect(obj.x + obj.width/2 - 3, obj.y + 7, 2, 2);
+        ctx.fillRect(obj.x + obj.width/2 + 1, obj.y + 7, 2, 2);
+      }
+
+      // Полоса здоровья
+      if (obj.health < obj.maxHealth) {
+        const healthPercent = obj.health / obj.maxHealth;
+        ctx.fillStyle = '#FF0000';
+        ctx.fillRect(obj.x, obj.y - 8, obj.width, 4);
+        ctx.fillStyle = healthPercent > 0.5 ? '#00FF00' : healthPercent > 0.25 ? '#FFFF00' : '#FF0000';
+        ctx.fillRect(obj.x, obj.y - 8, obj.width * healthPercent, 4);
+      }
+    });
+
+    // Рендеринг частиц
+    particles.forEach(particle => {
+      const alpha = particle.life / particle.maxLife;
+      ctx.fillStyle = particle.color + Math.floor(alpha * 255).toString(16).padStart(2, '0');
+      ctx.fillRect(particle.x, particle.y, 3, 3);
+    });
+  }, [gameObjects, particles]);
+
+  // Игровой цикл
+  useEffect(() => {
+    const gameLoop = setInterval(() => {
+      updatePhysics();
+      render();
+    }, 1000 / 60);
+
+    return () => clearInterval(gameLoop);
+  }, [updatePhysics, render]);
+
+  const tools = [
+    { id: 'spawn_human', name: 'Человек', icon: 'User' },
+    { id: 'spawn_box', name: 'Ящик', icon: 'Package' },
+    { id: 'spawn_ball', name: 'Мяч', icon: 'Circle' },
+    { id: 'spawn_platform', name: 'Платформа', icon: 'Minus' },
+    { id: 'drag', name: 'Перетаскивание', icon: 'Move' },
+    { id: 'damage', name: 'Урон', icon: 'Zap' },
+    { id: 'explode', name: 'Взрыв', icon: 'Bomb' },
   ];
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Navigation */}
-      <nav className="bg-primary/5 backdrop-blur-sm border-b sticky top-0 z-50">
-        <div className="container mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <Icon name="TreePine" size={28} className="text-primary" />
-              <h1 className="text-2xl font-bold text-primary">LumberCraft</h1>
+    <div className="min-h-screen bg-background p-4">
+      <div className="container mx-auto">
+        <div className="flex gap-6">
+          {/* Панель инструментов */}
+          <Card className="w-64 p-4">
+            <h2 className="text-xl font-bold mb-4 text-primary">Playground</h2>
+            
+            <div className="space-y-2 mb-6">
+              {tools.map(tool => (
+                <Button
+                  key={tool.id}
+                  variant={selectedTool === tool.id ? "default" : "outline"}
+                  className="w-full justify-start"
+                  onClick={() => setSelectedTool(tool.id)}
+                >
+                  <Icon name={tool.icon} size={18} className="mr-2" />
+                  {tool.name}
+                </Button>
+              ))}
             </div>
-            <div className="hidden md:flex space-x-8">
-              <a href="#home" className="text-foreground hover:text-primary transition-colors">Главная</a>
-              <a href="#gameplay" className="text-foreground hover:text-primary transition-colors">Геймплей</a>
-              <a href="#characters" className="text-foreground hover:text-primary transition-colors">Персонажи</a>
-              <a href="#screenshots" className="text-foreground hover:text-primary transition-colors">Скриншоты</a>
-              <a href="#downloads" className="text-foreground hover:text-primary transition-colors">Загрузки</a>
-              <a href="#news" className="text-foreground hover:text-primary transition-colors">Новости</a>
-              <a href="#community" className="text-foreground hover:text-primary transition-colors">Сообщество</a>
-              <a href="#contacts" className="text-foreground hover:text-primary transition-colors">Контакты</a>
-            </div>
-          </div>
-        </div>
-      </nav>
 
-      {/* Hero Section */}
-      <section id="home" className="py-20 px-6">
-        <div className="container mx-auto text-center">
-          <div className="max-w-4xl mx-auto">
-            <Badge variant="outline" className="mb-6 text-lg px-4 py-2">
-              <Icon name="Axe" size={20} className="mr-2" />
-              Симулятор лесоруба
-            </Badge>
-            <h1 className="text-6xl md:text-8xl font-bold mb-6 text-primary leading-tight">
-              LumberCraft
-            </h1>
-            <p className="text-xl md:text-2xl text-muted-foreground mb-8 leading-relaxed">
-              Станьте мастером леса в реалистичном симуляторе лесоруба. 
-              Рубите деревья, стройте империю, выживайте в дикой природе.
-            </p>
-            <div className="flex flex-col sm:flex-row gap-4 justify-center mb-12">
-              <Button size="lg" className="text-lg px-8 py-4">
-                <Icon name="Play" size={24} className="mr-2" />
-                Играть сейчас
+            <Separator className="my-4" />
+
+            <div className="space-y-3">
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={() => setGameObjects([])}
+              >
+                <Icon name="Trash2" size={18} className="mr-2" />
+                Очистить
               </Button>
-              <Button variant="outline" size="lg" className="text-lg px-8 py-4">
-                <Icon name="Download" size={24} className="mr-2" />
-                Скачать демо
-              </Button>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mt-16">
-              <div className="text-center">
-                <div className="text-3xl font-bold text-primary mb-2">15+</div>
-                <div className="text-muted-foreground">Видов деревьев</div>
-              </div>
-              <div className="text-center">
-                <div className="text-3xl font-bold text-primary mb-2">50+</div>
-                <div className="text-muted-foreground">Инструментов</div>
-              </div>
-              <div className="text-center">
-                <div className="text-3xl font-bold text-primary mb-2">100+</div>
-                <div className="text-muted-foreground">Крафт рецептов</div>
+              
+              <div className="text-sm text-muted-foreground">
+                <div>Объектов: {gameObjects.length}</div>
+                <div>Частиц: {particles.length}</div>
               </div>
             </div>
-          </div>
-        </div>
-      </section>
 
-      {/* Game Features */}
-      <section id="gameplay" className="py-20 px-6 bg-primary/5">
-        <div className="container mx-auto">
-          <div className="text-center mb-16">
-            <h2 className="text-4xl md:text-5xl font-bold mb-6 text-primary">Игровые механики</h2>
-            <p className="text-xl text-muted-foreground max-w-3xl mx-auto">
-              Погрузитесь в мир лесозаготовки с реалистичными механиками и глубокой прогрессией
-            </p>
-          </div>
+            <Separator className="my-4" />
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-            {gameFeatures.map((feature, index) => (
-              <Card key={index} className="hover:shadow-lg transition-all duration-300 hover:-translate-y-1 bg-card/50 backdrop-blur-sm">
-                <CardHeader>
-                  <div className="flex items-center justify-between mb-4">
-                    <Icon name={feature.icon} size={32} className="text-primary" />
-                    <Badge variant="secondary">{feature.progress}%</Badge>
-                  </div>
-                  <CardTitle className="text-xl">{feature.title}</CardTitle>
-                  <CardDescription className="text-base">{feature.description}</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <Progress value={feature.progress} className="w-full" />
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        </div>
-      </section>
+            <div className="text-xs text-muted-foreground space-y-1">
+              <div>• Выберите инструмент</div>
+              <div>• Кликните по игровому полю</div>
+              <div>• Перетаскивайте объекты</div>
+              <div>• Экспериментируйте с физикой!</div>
+            </div>
+          </Card>
 
-      {/* Characters & Tools */}
-      <section id="characters" className="py-20 px-6">
-        <div className="container mx-auto">
-          <div className="text-center mb-16">
-            <h2 className="text-4xl md:text-5xl font-bold mb-6 text-primary">Персонажи и инструменты</h2>
-          </div>
-
-          <Tabs defaultValue="tools" className="w-full">
-            <TabsList className="grid w-full grid-cols-3 mb-12">
-              <TabsTrigger value="tools" className="text-lg">Инструменты</TabsTrigger>
-              <TabsTrigger value="character" className="text-lg">Персонаж</TabsTrigger>
-              <TabsTrigger value="skills" className="text-lg">Навыки</TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="tools" className="space-y-8">
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                {[
-                  { name: "Каменный топор", level: "Начальный", icon: "Axe" },
-                  { name: "Стальной топор", level: "Средний", icon: "Wrench" },
-                  { name: "Бензопила", level: "Продвинутый", icon: "Zap" },
-                  { name: "Лесопилка", level: "Мастер", icon: "Settings" }
-                ].map((tool, index) => (
-                  <Card key={index} className="text-center hover:shadow-md transition-shadow">
-                    <CardHeader>
-                      <Icon name={tool.icon} size={48} className="mx-auto text-primary mb-4" />
-                      <CardTitle className="text-lg">{tool.name}</CardTitle>
-                      <Badge variant="outline">{tool.level}</Badge>
-                    </CardHeader>
-                  </Card>
-                ))}
-              </div>
-            </TabsContent>
-
-            <TabsContent value="character" className="space-y-8">
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
-                <div className="space-y-6">
-                  <h3 className="text-3xl font-bold text-primary">Ваш лесоруб</h3>
-                  <p className="text-lg text-muted-foreground">
-                    Начните путь простого дровосека и станьте владельцем лесоперерабатывающей империи. 
-                    Развивайте силу, выносливость и мастерство для покорения самых могучих деревьев.
-                  </p>
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-3">
-                      <Icon name="Zap" size={24} className="text-accent" />
-                      <span>Уровень силы влияет на скорость рубки</span>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <Icon name="Shield" size={24} className="text-accent" />
-                      <span>Выносливость определяет время работы</span>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <Icon name="Target" size={24} className="text-accent" />
-                      <span>Точность для эффективных ударов</span>
-                    </div>
-                  </div>
-                </div>
-                <div className="bg-primary/10 rounded-lg p-8 text-center">
-                  <Icon name="User" size={120} className="mx-auto text-primary mb-4" />
-                  <h4 className="text-xl font-semibold mb-2">Мастер Лесоруб</h4>
-                  <p className="text-muted-foreground">Уровень 45</p>
+          {/* Игровое поле */}
+          <div className="flex-1">
+            <Card className="p-4">
+              <div className="flex items-center justify-between mb-4">
+                <h1 className="text-2xl font-bold text-primary">Physics Playground</h1>
+                <div className="text-sm text-muted-foreground">
+                  Инструмент: <span className="font-semibold">
+                    {tools.find(t => t.id === selectedTool)?.name}
+                  </span>
                 </div>
               </div>
-            </TabsContent>
-
-            <TabsContent value="skills" className="space-y-8">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                {[
-                  { skill: "Сила рук", progress: 75, icon: "Dumbbell" },
-                  { skill: "Выносливость", progress: 60, icon: "Activity" },
-                  { skill: "Торговля", progress: 45, icon: "TrendingUp" },
-                  { skill: "Строительство", progress: 80, icon: "Home" }
-                ].map((skill, index) => (
-                  <Card key={index} className="p-6">
-                    <div className="flex items-center gap-4 mb-4">
-                      <Icon name={skill.icon} size={28} className="text-primary" />
-                      <div className="flex-1">
-                        <div className="flex justify-between items-center mb-2">
-                          <h4 className="font-semibold">{skill.skill}</h4>
-                          <span className="text-sm text-muted-foreground">{skill.progress}/100</span>
-                        </div>
-                        <Progress value={skill.progress} className="w-full" />
-                      </div>
-                    </div>
-                  </Card>
-                ))}
-              </div>
-            </TabsContent>
-          </Tabs>
-        </div>
-      </section>
-
-      {/* Screenshots */}
-      <section id="screenshots" className="py-20 px-6 bg-primary/5">
-        <div className="container mx-auto">
-          <div className="text-center mb-16">
-            <h2 className="text-4xl md:text-5xl font-bold mb-6 text-primary">Скриншоты игры</h2>
-            <p className="text-xl text-muted-foreground">Взгляните на красоту стилизованной графики</p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            <Card className="overflow-hidden hover:shadow-lg transition-shadow">
-              <div className="aspect-video overflow-hidden">
-                <img 
-                  src="/img/5b5273e9-4f33-4448-a5d8-387f2c10eb0b.jpg" 
-                  alt="Лесопилка"
-                  className="w-full h-full object-cover"
-                />
-              </div>
-              <CardHeader>
-                <CardTitle>Лесопилка</CardTitle>
-                <CardDescription>Современное оборудование для переработки</CardDescription>
-              </CardHeader>
-            </Card>
-            
-            <Card className="overflow-hidden hover:shadow-lg transition-shadow">
-              <div className="aspect-video overflow-hidden">
-                <img 
-                  src="/img/005622fc-1122-4dc8-a361-be7ae017263e.jpg" 
-                  alt="Глубокий лес"
-                  className="w-full h-full object-cover"
-                />
-              </div>
-              <CardHeader>
-                <CardTitle>Глубокий лес</CardTitle>
-                <CardDescription>Исследуйте девственные леса</CardDescription>
-              </CardHeader>
-            </Card>
-            
-            <Card className="overflow-hidden hover:shadow-lg transition-shadow">
-              <div className="aspect-video overflow-hidden">
-                <img 
-                  src="/img/3474d3e8-ec13-411c-bc27-5e73537096dc.jpg" 
-                  alt="Мастерская"
-                  className="w-full h-full object-cover"
-                />
-              </div>
-              <CardHeader>
-                <CardTitle>Мастер лесоруб</CardTitle>
-                <CardDescription>Станьте профессионалом своего дела</CardDescription>
-              </CardHeader>
+              
+              <canvas
+                ref={canvasRef}
+                width={CANVAS_WIDTH}
+                height={CANVAS_HEIGHT}
+                className="border border-border rounded-lg bg-white cursor-crosshair"
+                onClick={handleCanvasClick}
+                onMouseDown={handleMouseDown}
+                onMouseMove={handleMouseMove}
+                onMouseUp={handleMouseUp}
+                onMouseLeave={handleMouseUp}
+              />
             </Card>
           </div>
         </div>
-      </section>
-
-      {/* Downloads */}
-      <section id="downloads" className="py-20 px-6">
-        <div className="container mx-auto">
-          <div className="text-center mb-16">
-            <h2 className="text-4xl md:text-5xl font-bold mb-6 text-primary">Загрузки</h2>
-            <p className="text-xl text-muted-foreground">Выберите платформу и начните играть</p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-4xl mx-auto">
-            {[
-              { platform: "Windows", size: "2.4 ГБ", icon: "Monitor" },
-              { platform: "macOS", size: "2.6 ГБ", icon: "Laptop" },
-              { platform: "Linux", size: "2.2 ГБ", icon: "Terminal" }
-            ].map((download, index) => (
-              <Card key={index} className="text-center hover:shadow-lg transition-shadow">
-                <CardHeader>
-                  <Icon name={download.icon} size={48} className="mx-auto text-primary mb-4" />
-                  <CardTitle className="text-xl">{download.platform}</CardTitle>
-                  <CardDescription>Размер: {download.size}</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <Button className="w-full">
-                    <Icon name="Download" size={20} className="mr-2" />
-                    Скачать
-                  </Button>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* News */}
-      <section id="news" className="py-20 px-6 bg-primary/5">
-        <div className="container mx-auto">
-          <div className="text-center mb-16">
-            <h2 className="text-4xl md:text-5xl font-bold mb-6 text-primary">Новости</h2>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            {[
-              {
-                title: "Обновление 2.1: Новые виды деревьев",
-                date: "15 января 2024",
-                description: "Добавлены секвойи, баобабы и другие экзотические породы"
-              },
-              {
-                title: "Зимний ивент начинается!",
-                date: "1 декабря 2023", 
-                description: "Специальные задания и уникальные награды до конца января"
-              },
-              {
-                title: "Мультиплеер режим в бета-тесте",
-                date: "20 ноября 2023",
-                description: "Приглашаем игроков протестировать совместную игру"
-              }
-            ].map((news, index) => (
-              <Card key={index} className="hover:shadow-lg transition-shadow">
-                <CardHeader>
-                  <Badge variant="outline" className="w-fit mb-2">{news.date}</Badge>
-                  <CardTitle className="text-xl">{news.title}</CardTitle>
-                  <CardDescription>{news.description}</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <Button variant="outline">Читать далее</Button>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* Community */}
-      <section id="community" className="py-20 px-6">
-        <div className="container mx-auto text-center">
-          <h2 className="text-4xl md:text-5xl font-bold mb-6 text-primary">Сообщество</h2>
-          <p className="text-xl text-muted-foreground mb-12">Присоединяйтесь к нашему растущему сообществу лесорубов</p>
-          
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-8 mb-12">
-            {[
-              { platform: "Discord", members: "15K+", icon: "MessageCircle" },
-              { platform: "Reddit", members: "8K+", icon: "MessageSquare" },
-              { platform: "Steam", members: "25K+", icon: "Users" },
-              { platform: "YouTube", members: "12K+", icon: "Play" }
-            ].map((community, index) => (
-              <Card key={index} className="text-center hover:shadow-lg transition-shadow">
-                <CardHeader>
-                  <Icon name={community.icon} size={48} className="mx-auto text-primary mb-4" />
-                  <CardTitle>{community.platform}</CardTitle>
-                  <CardDescription>{community.members} участников</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <Button variant="outline" className="w-full">Присоединиться</Button>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* Contacts */}
-      <section id="contacts" className="py-20 px-6 bg-primary/5">
-        <div className="container mx-auto">
-          <div className="text-center mb-16">
-            <h2 className="text-4xl md:text-5xl font-bold mb-6 text-primary">Контакты</h2>
-            <p className="text-xl text-muted-foreground">Свяжитесь с нашей командой разработчиков</p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 max-w-4xl mx-auto">
-            {[
-              { type: "Поддержка", contact: "support@lumbercraft.com", icon: "HelpCircle" },
-              { type: "Пресса", contact: "press@lumbercraft.com", icon: "Newspaper" },
-              { type: "Сотрудничество", contact: "partners@lumbercraft.com", icon: "Handshake" },
-              { type: "Разработка", contact: "dev@lumbercraft.com", icon: "Code" }
-            ].map((contact, index) => (
-              <Card key={index} className="text-center hover:shadow-lg transition-shadow">
-                <CardHeader>
-                  <Icon name={contact.icon} size={32} className="mx-auto text-primary mb-4" />
-                  <CardTitle className="text-lg">{contact.type}</CardTitle>
-                  <CardDescription className="break-all">{contact.contact}</CardDescription>
-                </CardHeader>
-              </Card>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* Footer */}
-      <footer className="bg-primary text-primary-foreground py-12 px-6">
-        <div className="container mx-auto text-center">
-          <div className="flex items-center justify-center space-x-3 mb-6">
-            <Icon name="TreePine" size={32} />
-            <h3 className="text-2xl font-bold">LumberCraft</h3>
-          </div>
-          <p className="text-primary-foreground/80 mb-6">
-            © 2024 LumberCraft Studios. Все права защищены.
-          </p>
-          <div className="flex justify-center space-x-6">
-            <a href="#" className="text-primary-foreground/80 hover:text-primary-foreground transition-colors">
-              Политика конфиденциальности
-            </a>
-            <a href="#" className="text-primary-foreground/80 hover:text-primary-foreground transition-colors">
-              Условия использования
-            </a>
-            <a href="#" className="text-primary-foreground/80 hover:text-primary-foreground transition-colors">
-              EULA
-            </a>
-          </div>
-        </div>
-      </footer>
+      </div>
     </div>
   );
 };
